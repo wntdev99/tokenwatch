@@ -83,6 +83,7 @@ class Agg:
         self.declared = {}                       # sid -> cost-state totalCostUSD
         self.declared_meta = {}
         self.seen_msgs = set()                   # message.id dedup across all files
+        self.titles = {}                         # sid -> {"ai": ..., "custom": ...}
 
 
 def session_id_of(path: Path, root: Path) -> tuple[str, bool]:
@@ -122,6 +123,16 @@ def scan_file(path: Path, machine: str, agg: Agg, since, until, root: Path):
                 "added": d.get("totalLinesAdded", 0),
                 "removed": d.get("totalLinesRemoved", 0),
             }
+            continue
+
+        # Claude Code renames a session as it goes, so the last record wins.
+        # A title the user typed outranks the generated one.
+        if rtype in ("ai-title", "custom-title"):
+            t = agg.titles.setdefault((machine, d.get("sessionId") or sid), {})
+            if rtype == "ai-title":
+                t["ai"] = d.get("aiTitle") or t.get("ai")
+            else:
+                t["custom"] = d.get("customTitle") or t.get("custom")
             continue
 
         msg = d.get("message") or {}
@@ -252,6 +263,9 @@ def to_payload(agg: Agg, sources, files):
                  removed=meta.get("removed", 0))
         s["ctx_avg"] = round(s["ctx_sum"] / s["turns"]) if s["turns"] else 0
         del s["ctx_sum"]
+        t = agg.titles.get(key) or {}
+        s["title"] = t.get("custom") or t.get("ai") or ""
+        s["titled_by"] = "custom" if t.get("custom") else ("ai" if t.get("ai") else "")
         sessions.append(s)
     sessions.sort(key=lambda x: -x["cost"])
 
@@ -328,6 +342,9 @@ def demo_payload():
                 for _ in range(max(turns // 12, 1)):
                     hour = int(rnd.triangular(8, 23, 15))
                     heat[(m, day.weekday(), hour)] += c / max(turns // 12, 1)
+    topics = ["checkout flow refactor", "flaky test triage", "schema migration",
+              "CI pipeline cleanup", "auth bug", "dashboard polish", "log ingestion",
+              "release notes", "dependency bump", "perf profiling", "", ""]
     for i in range(70):
         m = rnd.choice(machines)
         p = rnd.choice(projects)
@@ -348,7 +365,9 @@ def demo_payload():
             apiMs=turns * rnd.randint(2_000, 9_000), toolMs=turns * rnd.randint(500, 4_000),
             wallMs=turns * rnd.randint(10_000, 40_000),
             added=rnd.randint(0, 4_000), removed=rnd.randint(0, 900),
-            ctx_avg=(cr + cw) // max(turns, 1)))
+            ctx_avg=(cr + cw) // max(turns, 1),
+            title=rnd.choice(topics),
+            titled_by=rnd.choice(["ai", "ai", "ai", "custom"])))
     sessions.sort(key=lambda s: -s["cost"])
     return {
         "meta": {"generated": dt.datetime.now().astimezone().isoformat(timespec="seconds"),

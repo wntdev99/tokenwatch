@@ -259,6 +259,10 @@ function tabCost(){
     {h:'세션', l:1, v:s=>s.sid, f:s=>`<span title="${s.sid}">${s.sid.slice(0,8)}</span>`},
     {h:'머신', l:1, v:s=>s.machine, f:s=>s.machine},
     {h:'프로젝트', l:1, v:s=>s.project, f:s=>s.project},
+    {h:'제목', l:1, v:s=>s.title||'~', f:s=>s.title
+       ? `<span title="${s.titled_by==='custom'?'직접 지정한 이름':'자동 생성된 제목'}"`
+         +` style="${s.titled_by==='custom'?'color:var(--ok)':''}">${s.title}</span>`
+       : '<span class="pill">제목 없음</span>'},
     {h:'시작', l:1, v:s=>s.start, f:s=>s.start.slice(0,16).replace('T',' ')},
     {h:'비용', v:s=>s.cost, f:s=>usd(s.cost)},
     {h:'기록된 비용', v:s=>s.declared||0, f:s=>s.declared==null?'<span class="pill">없음</span>':usd(s.declared)},
@@ -268,7 +272,10 @@ function tabCost(){
     {h:'API 시간', v:s=>s.apiMs, f:s=>s.apiMs?dur(s.apiMs):'-'},
     {h:'+/-', v:s=>s.added, f:s=>s.added||s.removed?`<span style="color:var(--ok)">+${s.added}</span>/<span style="color:var(--bad)">-${s.removed}</span>`:'-'},
   ];
-  out.append(panel('세션별 상세', '헤더를 클릭하면 정렬됩니다. "기록된 비용"은 Claude Code가 세션에 직접 남긴 값으로, 왼쪽 계산값의 검증용입니다.',
+  out.append(panel('세션별 상세',
+    '헤더를 클릭하면 정렬됩니다. 같은 폴더에서 돌린 세션은 프로젝트 이름이 같고 제목으로 구분됩니다. '
+    + '초록색 제목은 직접 지정한 이름이고 나머지는 Claude Code가 붙인 제목입니다. '
+    + '"기록된 비용"은 Claude Code가 세션에 직접 남긴 값으로, 왼쪽 계산값의 검증용입니다.',
     table(cols, sess.slice())));
   return out;
 }

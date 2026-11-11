@@ -39,6 +39,8 @@ TokenWatch answers those four questions, one per tab.
 
 **Cost attribution** — daily cost stacked by project, ranked by project and by git branch, and
 a sortable table of every session with its turns, average context, API time and lines changed.
+Sessions carry the title Claude Code gave them, so several runs out of the same directory stay
+told apart; a name you typed yourself is shown in green.
 
 **Waste tracing** — the same daily cost split by *token kind* instead of project. Cache reads,
 cache writes, output and uncached input are priced separately, so the chart shows what your
@@ -128,7 +130,10 @@ side by side.
    all turns. TokenWatch deduplicates on `message.id` before pricing anything.
 3. Subagent transcripts live in `<session>/subagents/**.jsonl` and cost real money. They are
    read too, and billed to the session that spawned them.
-4. Claude Code also writes a `cost-state` record holding its own running total.
+4. Session titles come from the `ai-title` and `custom-title` records, which Claude Code
+   rewrites as a session goes on. The last one wins, and a title you typed outranks the
+   generated one.
+5. Claude Code also writes a `cost-state` record holding its own running total.
    TokenWatch compares its arithmetic against that record per session and prints the result:
 
    ```
