@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+tokenwatch-report.html
+*-report.html

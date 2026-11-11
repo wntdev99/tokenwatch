@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TokenWatch</title>
+<style>
+:root{
+  --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+  --fg:#e7eaf0; --dim:#9aa3b2; --accent:#7aa2ff; --warn:#ffb86b; --bad:#ff7a7a; --ok:#6ee7a8;
+  --c1:#7aa2ff; --c2:#6ee7a8; --c3:#ffb86b; --c4:#ff7a9c; --c5:#b48bff; --c6:#5fd4e4;
+  --c7:#d4d85f; --c8:#ff9f6b; --c9:#8be0b0; --c10:#9aa3b2;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:14px/1.5 ui-sans-serif,-apple-system,"Pretendard","Noto Sans KR",sans-serif}
+header{padding:18px 22px;border-bottom:1px solid var(--line);
+  display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+h1{font-size:17px;margin:0;font-weight:650;letter-spacing:-.2px}
+.sub{color:var(--dim);font-size:12px}
+.spacer{flex:1}
+select,input,button{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+  border-radius:4px;padding:6px 9px;font:inherit;font-size:13px}
+button{cursor:pointer}
+button:hover{border-color:var(--accent)}
+main{padding:18px 22px 60px;max-width:1500px;margin:0 auto}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.kpi .l{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.kpi .v{font-size:22px;font-weight:650;margin-top:4px;font-variant-numeric:tabular-nums}
+.kpi .s{color:var(--dim);font-size:11px;margin-top:2px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;flex-wrap:wrap}
+.tab{padding:9px 14px;cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;font-size:13px}
+.tab.on{color:var(--fg);border-bottom-color:var(--accent)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px 16px;margin-bottom:16px}
+.panel h2{font-size:13px;margin:0 0 4px;font-weight:600}
+.panel .note{color:var(--dim);font-size:12px;margin:0 0 12px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child,th.l,td.l{text-align:left}
+th{color:var(--dim);font-weight:500;cursor:pointer;user-select:none;position:sticky;top:0;background:var(--panel)}
+th:hover{color:var(--fg)}
+tbody tr:hover{background:var(--panel2)}
+.num{font-variant-numeric:tabular-nums}
+.scroll{max-height:460px;overflow:auto}
+.legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;font-size:11.5px;color:var(--dim)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.bar-row{display:grid;grid-template-columns:minmax(90px,190px) 1fr auto;gap:10px;align-items:center;margin:5px 0}
+.bar-row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+.bar-track{background:var(--panel2);border-radius:3px;height:16px;overflow:hidden;display:flex}
+.bar-track div{height:100%}
+.bar-val{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums;min-width:74px;text-align:right}
+svg{display:block;width:100%;overflow:visible}
+.tip{position:fixed;pointer-events:none;background:#000d;border:1px solid var(--line);
+  border-radius:4px;padding:6px 9px;font-size:12px;z-index:9;white-space:pre;display:none}
+.pill{display:inline-block;background:var(--panel2);border:1px solid var(--line);
+  border-radius:10px;padding:1px 8px;font-size:11px;color:var(--dim)}
+.warnbox{border-left:3px solid var(--warn);padding-left:10px;color:var(--dim);font-size:12px;margin-top:10px}
+</style>
+</head>
+<body>
+<div class="tip" id="tip"></div>
+<header>
+  <div>
+    <h1>Claude Code 사용량 대시보드</h1>
+    <div class="sub" id="meta"></div>
+  </div>
+  <div class="spacer"></div>
+  <select id="fMachine"></select>
+  <input type="date" id="fFrom"><input type="date" id="fTo">
+  <button id="reset">전체 기간</button>
+</header>
+<main>
+  <div class="kpis" id="kpis"></div>
+  <div class="tabs" id="tabs"></div>
+  <div id="view"></div>
+</main>
+<script>
+const DATA = /*__DATA__*/null;
+const C = ['--c1','--c2','--c3','--c4','--c5','--c6','--c7','--c8','--c9','--c10']
+  .map(v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim());
+const DOW = ['월','화','수','목','금','토','일'];
+const $ = s=>document.querySelector(s);
+const el = (t,c,h)=>{const e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e;};
+const usd = v=> v>=100 ? '$'+v.toFixed(0) : v>=1 ? '$'+v.toFixed(2) : '$'+v.toFixed(3);
+const num = v=> v>=1e9 ? (v/1e9).toFixed(2)+'B' : v>=1e6 ? (v/1e6).toFixed(1)+'M'
+              : v>=1e3 ? (v/1e3).toFixed(1)+'k' : String(Math.round(v));
+const dur = ms=>{const m=ms/60000; return m>=60 ? (m/60).toFixed(1)+'h' : m.toFixed(0)+'m';};
+const tip = $('#tip');
+function hover(node, text){
+  node.addEventListener('mousemove', e=>{tip.style.display='block';tip.textContent=text;
+    tip.style.left=Math.min(e.clientX+12, innerWidth-tip.offsetWidth-8)+'px';
+    tip.style.top=(e.clientY+14)+'px';});
+  node.addEventListener('mouseleave', ()=>tip.style.display='none');
+}
+
+/* ---------- state ---------- */
+const allDays = DATA.days.map(d=>d.day).sort();
+const S = {machine:'*', from:allDays[0]||'', to:allDays[allDays.length-1]||'', tab:0};
+
+function inRange(day){ return (!S.from||day>=S.from) && (!S.to||day<=S.to); }
+function mOk(m){ return S.machine==='*' || m===S.machine; }
+const fDays = ()=>DATA.days.filter(d=>mOk(d.machine)&&inRange(d.day));
+const fSessions = ()=>DATA.sessions.filter(s=>mOk(s.machine)&&inRange(s.start.slice(0,10)));
+const fTools = ()=>DATA.tools.filter(t=>mOk(t.machine));
+const fHeat = ()=>DATA.heat.filter(h=>mOk(h.machine));
+
+/* ---------- generic charts ---------- */
+function barList(items, total, fmt=usd, color=0){
+  const box = el('div');
+  const max = Math.max(...items.map(i=>i.v), 1e-9);
+  items.forEach((it,i)=>{
+    const row = el('div','bar-row');
+    row.append(el('div','nm',it.k));
+    const track = el('div','bar-track');
+    const seg = el('div'); seg.style.width=(it.v/max*100)+'%';
+    seg.style.background=C[(color+ (it.ci??0))%C.length]; track.append(seg);
+    row.append(track);
+    const share = total? ' ('+(it.v/total*100).toFixed(1)+'%)':'';
+    row.append(el('div','bar-val',fmt(it.v)));
+    hover(row, it.k+'\n'+fmt(it.v)+share+(it.sub?'\n'+it.sub:''));
+    box.append(row);
+  });
+  return box;
+}
+
+/* stacked daily bars: rows=[{day, parts:{key:value}}] */
+function stackedDaily(rows, keys, yfmt=usd){
+  const W=1000,H=240,pl=52,pb=26,pt=8;
+  const max = Math.max(...rows.map(r=>keys.reduce((a,k)=>a+(r.parts[k]||0),0)), 1e-9);
+  const bw = (W-pl)/Math.max(rows.length,1);
+  // axis labels share one decimal width so the scale reads as a scale
+  const dp = max>=100?0:max>=10?1:2;
+  const afmt = yfmt===usd ? v=>'$'+v.toFixed(dp) : yfmt;
+  const ns='http://www.w3.org/2000/svg';
+  const svg=document.createElementNS(ns,'svg');
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  for(let g=0;g<=4;g++){
+    const y=pt+(H-pt-pb)*g/4, v=max*(1-g/4);
+    const l=document.createElementNS(ns,'line');
+    l.setAttribute('x1',pl);l.setAttribute('x2',W);l.setAttribute('y1',y);l.setAttribute('y2',y);
+    l.setAttribute('stroke','#2a2f3a');svg.append(l);
+    const t=document.createElementNS(ns,'text');
+    t.setAttribute('x',pl-7);t.setAttribute('y',y+4);t.setAttribute('text-anchor','end');
+    t.setAttribute('fill','#9aa3b2');t.setAttribute('font-size','10');t.textContent=afmt(v);
+    svg.append(t);
+  }
+  rows.forEach((r,i)=>{
+    let acc=0;
+    const tot=keys.reduce((a,k)=>a+(r.parts[k]||0),0);
+    const g=document.createElementNS(ns,'g');
+    keys.forEach((k,ki)=>{
+      const v=r.parts[k]||0; if(!v) return;
+      const h=(H-pt-pb)*v/max;
+      const y=H-pb-((H-pt-pb)*(acc+v)/max);
+      const rc=document.createElementNS(ns,'rect');
+      rc.setAttribute('x',pl+i*bw+bw*0.12);rc.setAttribute('y',y);
+      rc.setAttribute('width',Math.max(bw*0.76,1));rc.setAttribute('height',Math.max(h,0.5));
+      rc.setAttribute('fill',C[ki%C.length]);g.append(rc);
+      acc+=v;
+    });
+    const parts=keys.filter(k=>r.parts[k]).sort((a,b)=>r.parts[b]-r.parts[a]).slice(0,8)
+      .map(k=>'  '+k+': '+yfmt(r.parts[k])).join('\n');
+    hover(g, r.day+'  합계 '+yfmt(tot)+'\n'+parts);
+    svg.append(g);
+    if(rows.length<=40 || i%Math.ceil(rows.length/18)===0){
+      const t=document.createElementNS(ns,'text');
+      t.setAttribute('x',pl+i*bw+bw/2);t.setAttribute('y',H-8);
+      t.setAttribute('text-anchor','middle');t.setAttribute('fill','#9aa3b2');
+      t.setAttribute('font-size','9.5');t.textContent=r.day.slice(5);svg.append(t);
+    }
+  });
+  return svg;
+}
+
+function legend(keys){
+  const b=el('div','legend');
+  keys.forEach((k,i)=>b.append(el('span',null,`<i style="background:${C[i%C.length]}"></i>${k}`)));
+  return b;
+}
+
+function heatmap(cells){
+  const max=Math.max(...cells.map(c=>c.cost),1e-9);
+  const t=el('table'); t.style.fontSize='11px';
+  const head=el('tr'); head.append(el('th','l',''));
+  for(let h=0;h<24;h++) head.append(el('th',null,h%2?'':String(h)));
+  t.append(head);
+  for(let d=0;d<7;d++){
+    const tr=el('tr'); tr.append(el('td','l',DOW[d]));
+    for(let h=0;h<24;h++){
+      const v=cells.filter(c=>c.dow===d&&c.hour===h).reduce((a,c)=>a+c.cost,0);
+      const td=el('td'); td.style.padding='0';
+      const sq=el('div'); sq.style.cssText=`height:19px;border-radius:2px;margin:1px;
+        background:rgba(122,162,255,${v?0.12+0.88*Math.pow(v/max,0.55):0.03})`;
+      hover(sq, DOW[d]+'요일 '+h+'시\n'+usd(v)); td.append(sq); tr.append(td);
+    }
+    t.append(tr);
+  }
+  return t;
+}
+
+function table(cols, rows){
+  const wrap=el('div','scroll'); const t=el('table');
+  const hr=el('tr'); cols.forEach((c,i)=>{
+    const th=el('th',c.l?'l':'',c.h); th.onclick=()=>{
+      rows.sort((a,b)=>{const x=c.v(a),y=c.v(b);
+        return typeof x==='string'? x.localeCompare(y): y-x;});
+      wrap.replaceWith(table(cols,rows)); };
+    hr.append(th);});
+  t.append(hr);
+  rows.forEach(r=>{const tr=el('tr');
+    cols.forEach(c=>tr.append(el('td',c.l?'l':'num',c.f(r)))); t.append(tr);});
+  wrap.append(t); return wrap;
+}
+
+function panel(title, note, ...kids){
+  const p=el('div','panel'); p.append(el('h2',null,title));
+  if(note) p.append(el('p','note',note));
+  kids.forEach(k=>k&&p.append(k)); return p;
+}
+
+/* ---------- tabs ---------- */
+function tabCost(){
+  const days=fDays(), sess=fSessions();
+  const byDay={}; const projTot={};
+  days.forEach(d=>{
+    (byDay[d.day] ||= {day:d.day, parts:{}});
+    byDay[d.day].parts[d.project]=(byDay[d.day].parts[d.project]||0)+d.cost;
+    projTot[d.project]=(projTot[d.project]||0)+d.cost;
+  });
+  const topProj=Object.entries(projTot).sort((a,b)=>b[1]-a[1]);
+  const keys=topProj.slice(0,9).map(p=>p[0]);
+  const rows=Object.values(byDay).sort((a,b)=>a.day<b.day?-1:1).map(r=>{
+    const parts={}; let other=0;
+    for(const [k,v] of Object.entries(r.parts)){ keys.includes(k)? parts[k]=v : other+=v; }
+    if(other) parts['기타']=other;
+    return {day:r.day, parts};
+  });
+  const sk=keys.concat(rows.some(r=>r.parts['기타'])?['기타']:[]);
+  const total=topProj.reduce((a,p)=>a+p[1],0);
+
+  const out=el('div');
+  out.append(panel('일별 비용 — 프로젝트별 누적',
+    '막대에 마우스를 올리면 그날 비용 상위 프로젝트가 보입니다.',
+    stackedDaily(rows, sk), legend(sk)));
+
+  const g1 = el('div','grid2');
+  g1.append(
+    panel('프로젝트별 비용 Top 15', `전체 ${usd(total)} 기준`,
+      barList(topProj.slice(0,15).map(([k,v],i)=>({k,v,ci:i})), total)),
+    panel('브랜치별 비용 Top 15', 'git branch 단위 귀속입니다.',
+      barList(DATA.branches.filter(b=>mOk(b.machine)).slice(0,15)
+        .map((b,i)=>({k:b.project+' / '+b.branch, v:b.cost, ci:i, sub:b.turns+' turns'})), total))
+  );
+  out.append(g1);
+
+  const cols=[
+    {h:'세션', l:1, v:s=>s.sid, f:s=>`<span title="${s.sid}">${s.sid.slice(0,8)}</span>`},
+    {h:'머신', l:1, v:s=>s.machine, f:s=>s.machine},
+    {h:'프로젝트', l:1, v:s=>s.project, f:s=>s.project},
+    {h:'시작', l:1, v:s=>s.start, f:s=>s.start.slice(0,16).replace('T',' ')},
+    {h:'비용', v:s=>s.cost, f:s=>usd(s.cost)},
+    {h:'기록된 비용', v:s=>s.declared||0, f:s=>s.declared==null?'<span class="pill">없음</span>':usd(s.declared)},
+    {h:'턴', v:s=>s.turns, f:s=>s.turns},
+    {h:'평균 컨텍스트', v:s=>s.ctx_avg, f:s=>num(s.ctx_avg)},
+    {h:'출력', v:s=>s.out, f:s=>num(s.out)},
+    {h:'API 시간', v:s=>s.apiMs, f:s=>s.apiMs?dur(s.apiMs):'-'},
+    {h:'+/-', v:s=>s.added, f:s=>s.added||s.removed?`<span style="color:var(--ok)">+${s.added}</span>/<span style="color:var(--bad)">-${s.removed}</span>`:'-'},
+  ];
+  out.append(panel('세션별 상세', '헤더를 클릭하면 정렬됩니다. "기록된 비용"은 Claude Code가 세션에 직접 남긴 값으로, 왼쪽 계산값의 검증용입니다.',
+    table(cols, sess.slice())));
+  return out;
+}
+
+function tabWaste(){
+  const days=fDays(), sess=fSessions();
+  const kinds={'캐시 읽기':'cr','캐시 쓰기':'cw','출력':'out','입력(비캐시)':'inp'};
+  const PR = DATA.meta.pricing['claude-opus-5-5'];
+  const byDay={};
+  days.forEach(d=>{
+    const r=(byDay[d.day] ||= {day:d.day, parts:{}});
+    r.parts['캐시 읽기']=(r.parts['캐시 읽기']||0)+d.cr*PR.cr/1e6;
+    r.parts['캐시 쓰기']=(r.parts['캐시 쓰기']||0)+d.cw*PR.cw1h/1e6;
+    r.parts['출력']=(r.parts['출력']||0)+d.out*PR.out/1e6;
+    r.parts['입력(비캐시)']=(r.parts['입력(비캐시)']||0)+d.inp*PR.in/1e6;
+  });
+  const krows=Object.values(byDay).sort((a,b)=>a.day<b.day?-1:1);
+  const kkeys=Object.keys(kinds);
+
+  const sum=f=>days.reduce((a,d)=>a+f(d),0);
+  const tot={cr:sum(d=>d.cr), cw:sum(d=>d.cw), out:sum(d=>d.out), inp:sum(d=>d.inp),
+             think:sum(d=>d.think), turns:sum(d=>d.turns)};
+
+  const out=el('div');
+  out.append(panel('일별 비용 — 토큰 종류별 누적',
+    'Opus 5.5 단가를 적용한 근사치입니다. 캐시 쓰기와 읽기가 차지하는 비중이 곧 "컨텍스트를 얼마나 쌓았는가"입니다.',
+    stackedDaily(krows, kkeys), legend(kkeys)));
+
+  const toolRows=fTools().reduce((m,t)=>{
+    const r=(m[t.tool] ||= {tool:t.tool, calls:0, chars:0, errors:0});
+    r.calls+=t.calls; r.chars+=t.chars; r.errors+=t.errors; return m;},{});
+  const tools=Object.values(toolRows).sort((a,b)=>b.chars-a.chars);
+  const charTot=tools.reduce((a,t)=>a+t.chars,0);
+
+  const g=el('div','grid2');
+  g.append(
+    panel('도구가 컨텍스트에 밀어 넣은 양', '도구 결과 문자 수 기준입니다. 이 값이 다음 턴의 캐시 쓰기 비용으로 돌아옵니다.',
+      barList(tools.slice(0,12).map((t,i)=>({k:t.tool, v:t.chars, ci:i,
+        sub:t.calls+'회 호출 · 호출당 '+num(t.chars/Math.max(t.calls,1))+'자'})), charTot, num)),
+    panel('도구 호출 횟수', null,
+      barList(tools.slice().sort((a,b)=>b.calls-a.calls).slice(0,12)
+        .map((t,i)=>({k:t.tool, v:t.calls, ci:i, sub:t.errors?t.errors+'건 오류':''})),
+        tools.reduce((a,t)=>a+t.calls,0), v=>String(v)))
+  );
+  out.append(g);
+
+  const heavy=sess.filter(s=>s.turns>=5).sort((a,b)=>b.ctx_avg-a.ctx_avg).slice(0,15);
+  out.append(panel('턴당 평균 컨텍스트가 큰 세션',
+    '턴마다 다시 읽는 컨텍스트가 클수록 같은 작업이 비싸집니다. 컨텍스트를 줄일 후보입니다.',
+    barList(heavy.map((s,i)=>({k:s.project+' / '+s.sid.slice(0,8), v:s.ctx_avg, ci:i,
+      sub:usd(s.cost)+' · '+s.turns+' turns'})), 0, num)));
+
+  const kpi=el('div','kpis');
+  const add=(l,v,s)=>{const k=el('div','kpi');k.append(el('div','l',l),el('div','v',v),el('div','s',s||''));kpi.append(k);};
+  add('캐시 읽기 토큰', num(tot.cr), '턴당 '+num(tot.cr/Math.max(tot.turns,1)));
+  add('캐시 쓰기 토큰', num(tot.cw), '읽기 대비 '+(tot.cw/Math.max(tot.cr,1)*100).toFixed(1)+'%');
+  add('출력 토큰', num(tot.out), '그중 thinking '+num(tot.think));
+  add('비캐시 입력', num(tot.inp), '전체 입력의 '+(tot.inp/Math.max(tot.inp+tot.cr+tot.cw,1)*100).toFixed(2)+'%');
+  out.append(panel('토큰 구성', '캐시 쓰기 비율이 높을수록 컨텍스트가 자주 무효화되고 있다는 뜻입니다.', kpi));
+  return out;
+}
+
+function tabPattern(){
+  const out=el('div');
+  out.append(panel('요일 × 시간대 비용 히트맵', '로컬 시간 기준입니다.', heatmap(fHeat())));
+
+  const days=fDays();
+  const byDay={}; days.forEach(d=>{
+    const r=(byDay[d.day] ||= {day:d.day, parts:{}});
+    r.parts['턴']=(r.parts['턴']||0)+d.turns;});
+  out.append(panel('일별 턴 수', '비용이 아닌 작업량 관점의 추이입니다.',
+    stackedDaily(Object.values(byDay).sort((a,b)=>a.day<b.day?-1:1), ['턴'], num)));
+
+  const g=el('div','grid2');
+  const mods=DATA.models.filter(m=>mOk(m.machine)).reduce((m,x)=>{
+    const r=(m[x.model] ||= {k:x.model,v:0,t:0}); r.v+=x.cost; r.t+=x.turns; return m;},{});
+  const effs=DATA.efforts.filter(e=>mOk(e.machine)).reduce((m,x)=>{
+    const r=(m[x.effort] ||= {k:x.effort,v:0,t:0}); r.v+=x.cost; r.t+=x.turns; return m;},{});
+  const tot=Object.values(mods).reduce((a,m)=>a+m.v,0);
+  g.append(
+    panel('모델별 비용', null, barList(Object.values(mods).sort((a,b)=>b.v-a.v)
+      .map((m,i)=>({k:m.k,v:m.v,ci:i,sub:m.t+' turns'})), tot)),
+    panel('effort별 비용', 'effort는 턴 단위로 기록됩니다.',
+      barList(Object.values(effs).sort((a,b)=>b.v-a.v)
+        .map((e,i)=>({k:e.k,v:e.v,ci:i,sub:e.t+' turns'})), tot)));
+  out.append(g);
+
+  const sess=fSessions();
+  const long=sess.slice().sort((a,b)=>b.wallMs-a.wallMs).slice(0,15);
+  out.append(panel('가장 오래 붙잡은 세션 Top 15', 'Claude Code가 기록한 세션 총 경과 시간입니다.',
+    barList(long.map((s,i)=>({k:s.project+' / '+s.sid.slice(0,8), v:s.wallMs, ci:i,
+      sub:usd(s.cost)+' · API '+dur(s.apiMs)+' · 도구 '+dur(s.toolMs)})), 0, dur)));
+  return out;
+}
+
+function tabMachine(){
+  const out=el('div');
+  const ms={};
+  DATA.days.filter(d=>inRange(d.day)).forEach(d=>{
+    const r=(ms[d.machine] ||= {k:d.machine, cost:0, turns:0, cr:0, cw:0, out:0});
+    r.cost+=d.cost; r.turns+=d.turns; r.cr+=d.cr; r.cw+=d.cw; r.out+=d.out;});
+  const rows=Object.values(ms).sort((a,b)=>b.cost-a.cost);
+  const tot=rows.reduce((a,r)=>a+r.cost,0);
+  out.append(panel('머신별 비용', '수집 시 --source NAME=PATH 로 붙인 태그 기준입니다.',
+    barList(rows.map((r,i)=>({k:r.k, v:r.cost, ci:i, sub:r.turns+' turns'})), tot)));
+
+  const byDay={};
+  DATA.days.filter(d=>inRange(d.day)).forEach(d=>{
+    const r=(byDay[d.day] ||= {day:d.day, parts:{}});
+    r.parts[d.machine]=(r.parts[d.machine]||0)+d.cost;});
+  out.append(panel('일별 비용 — 머신별 누적', null,
+    stackedDaily(Object.values(byDay).sort((a,b)=>a.day<b.day?-1:1), rows.map(r=>r.k)),
+    legend(rows.map(r=>r.k))));
+
+  const cols=[
+    {h:'머신',l:1,v:r=>r.k,f:r=>r.k},
+    {h:'비용',v:r=>r.cost,f:r=>usd(r.cost)},
+    {h:'턴',v:r=>r.turns,f:r=>r.turns},
+    {h:'캐시 읽기',v:r=>r.cr,f:r=>num(r.cr)},
+    {h:'캐시 쓰기',v:r=>r.cw,f:r=>num(r.cw)},
+    {h:'출력',v:r=>r.out,f:r=>num(r.out)},
+  ];
+  out.append(panel('머신 비교표', null, table(cols, rows)));
+  if(rows.length<2) out.append(el('div','panel',
+    '<div class="warnbox">머신이 하나뿐입니다. 다른 호스트의 로그를 <code>rsync</code>로 받아온 뒤 '+
+    '<code>--source robot201=/path/to/projects</code> 처럼 태그를 붙여 다시 실행하면 비교가 활성화됩니다.</div>'));
+  return out;
+}
+
+const TABS=[['비용 귀속',tabCost],['낭비 원인',tabWaste],['작업 패턴',tabPattern],['머신 비교',tabMachine]];
+
+function renderKpis(){
+  const days=fDays(), sess=fSessions();
+  const cost=days.reduce((a,d)=>a+d.cost,0);
+  const turns=days.reduce((a,d)=>a+d.turns,0);
+  const cr=days.reduce((a,d)=>a+d.cr,0), cw=days.reduce((a,d)=>a+d.cw,0);
+  const dayset=new Set(days.map(d=>d.day));
+  const cal=DATA.meta.calibration;
+  const k=$('#kpis'); k.innerHTML='';
+  const add=(l,v,s)=>{const e=el('div','kpi');
+    e.append(el('div','l',l),el('div','v',v),el('div','s',s||'')); k.append(e);};
+  add('총 비용', usd(cost), dayset.size+'일 · 하루 평균 '+usd(cost/Math.max(dayset.size,1)));
+  add('세션', String(sess.length), '세션당 '+usd(cost/Math.max(sess.length,1)));
+  add('턴', num(turns), '턴당 '+usd(cost/Math.max(turns,1)));
+  add('캐시 적중', (cr/Math.max(cr+cw,1)*100).toFixed(1)+'%', '읽기 '+num(cr)+' / 쓰기 '+num(cw));
+  add('프로젝트', String(new Set(days.map(d=>d.project)).size),
+      new Set(days.map(d=>d.machine)).size+'개 머신');
+  add('계산 정확도', cal.median_ratio==null?'-':'×'+cal.median_ratio.toFixed(3),
+      '세션별 기록값 대비 중앙값 ('+cal.compared+'개 세션)');
+}
+
+function render(){
+  renderKpis();
+  const t=$('#tabs'); t.innerHTML='';
+  TABS.forEach(([name],i)=>{
+    const b=el('div','tab'+(i===S.tab?' on':''),name);
+    b.onclick=()=>{S.tab=i; location.hash='tab'+i; render();}; t.append(b);});
+  const v=$('#view'); v.innerHTML=''; v.append(TABS[S.tab][1]());
+}
+
+(function init(){
+  const h=/^#tab(\d)$/.exec(location.hash);
+  if(h && TABS[+h[1]]) S.tab=+h[1];
+  const m=$('#meta');
+  const c=DATA.meta.calibration;
+  m.textContent = `생성 ${DATA.meta.generated} · 로그 ${DATA.meta.files}개 · `
+    + `소스 ${DATA.meta.sources.map(s=>s.machine).join(', ')} · `
+    + `계산 정확도 ×${c.median_ratio??'N/A'} (세션별 중앙값)`;
+  const sel=$('#fMachine');
+  const machines=[...new Set(DATA.days.map(d=>d.machine))];
+  sel.append(new Option('모든 머신','*'));
+  machines.forEach(x=>sel.append(new Option(x,x)));
+  sel.onchange=()=>{S.machine=sel.value; render();};
+  $('#fFrom').value=S.from; $('#fTo').value=S.to;
+  $('#fFrom').onchange=e=>{S.from=e.target.value; render();};
+  $('#fTo').onchange=e=>{S.to=e.target.value; render();};
+  $('#reset').onclick=()=>{S.from=allDays[0]; S.to=allDays[allDays.length-1];
+    $('#fFrom').value=S.from; $('#fTo').value=S.to; render();};
+  render();
+})();
+</script>
+</body>
+</html>
