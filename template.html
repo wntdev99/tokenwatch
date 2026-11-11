@@ -266,6 +266,9 @@ function tabCost(){
     {h:'시작', l:1, v:s=>s.start, f:s=>s.start.slice(0,16).replace('T',' ')},
     {h:'비용', v:s=>s.cost, f:s=>usd(s.cost)},
     {h:'기록된 비용', v:s=>s.declared||0, f:s=>s.declared==null?'<span class="pill">없음</span>':usd(s.declared)},
+    {h:'서브에이전트', v:s=>s.agent_cost||0,
+     f:s=>s.agent_cost ? usd(s.agent_cost)+' <span style="color:var(--dim)">('
+          +(s.agent_cost/Math.max(s.cost,1e-9)*100).toFixed(0)+'%)</span>' : '-'},
     {h:'턴', v:s=>s.turns, f:s=>s.turns},
     {h:'평균 컨텍스트', v:s=>s.ctx_avg, f:s=>num(s.ctx_avg)},
     {h:'출력', v:s=>s.out, f:s=>num(s.out)},
@@ -335,6 +338,35 @@ function tabWaste(){
   add('출력 토큰', num(tot.out), '그중 thinking '+num(tot.think));
   add('비캐시 입력', num(tot.inp), '전체 입력의 '+(tot.inp/Math.max(tot.inp+tot.cr+tot.cw,1)*100).toFixed(2)+'%');
   out.append(panel('토큰 구성', '캐시 쓰기 비율이 높을수록 컨텍스트가 자주 무효화되고 있다는 뜻입니다.', kpi));
+
+  // Cache TTL: a 1h write costs 2x the input rate, a 5m write 1.25x, and a read
+  // 0.05x. So a cached token pays for itself past ~2.1 reads (1h) or ~1.3 (5m).
+  const ttl=(DATA.ttl||[]).filter(t=>mOk(t.machine)).reduce((m,t)=>{
+    const r=(m[t.ttl] ||= {ttl:t.ttl, cost:0, turns:0, cw:0, cr:0, write_cost:0});
+    for(const k of ['cost','turns','cw','cr','write_cost']) r[k]+=t[k];
+    return m;},{});
+  const trows=Object.values(ttl).sort((a,b)=>b.cost-a.cost);
+  if(trows.length){
+    const BE={'1h':2.1, '5m':1.3};
+    const cols=[
+      {h:'요청한 TTL', l:1, v:t=>t.ttl, f:t=>t.ttl==='(none)'?'<span class="pill">미지정</span>':t.ttl},
+      {h:'턴', v:t=>t.turns, f:t=>num(t.turns)},
+      {h:'캐시 쓰기 토큰', v:t=>t.cw, f:t=>num(t.cw)},
+      {h:'쓰기 비용', v:t=>t.write_cost, f:t=>usd(t.write_cost)},
+      {h:'캐시 읽기 토큰', v:t=>t.cr, f:t=>num(t.cr)},
+      {h:'재사용', v:t=>t.cr/Math.max(t.cw,1), f:t=>(t.cr/Math.max(t.cw,1)).toFixed(1)+'배'},
+      {h:'손익분기', l:1, v:t=>t.ttl, f:t=>{
+        const be=BE[t.ttl]; if(!be) return '<span class="pill">기준 없음</span>';
+        const r=t.cr/Math.max(t.cw,1);
+        return r>=be ? `<span style="color:var(--ok)">${be}배 초과 — 이득</span>`
+                     : `<span style="color:var(--bad)">${be}배 미달 — 손해</span>`;}},
+    ];
+    out.append(panel('캐시 TTL이 본전을 뽑았는가',
+      '1시간 캐시는 쓰기 단가가 입력의 2배, 5분 캐시는 1.25배이고 읽기는 0.05배입니다. '
+      + '따라서 캐시에 쓴 토큰을 1시간 캐시는 2.1배, 5분 캐시는 1.3배 넘게 다시 읽어야 이득입니다. '
+      + '"미지정"은 Claude Code가 TTL을 명시하지 않은 턴입니다.',
+      table(cols, trows)));
+  }
   return out;
 }
 
@@ -405,7 +437,95 @@ function tabMachine(){
   return out;
 }
 
-const TABS=[['비용 귀속',tabCost],['낭비 원인',tabWaste],['작업 패턴',tabPattern],['머신 비교',tabMachine]];
+function tabPrompts(){
+  const ps=(DATA.prompts||[]).filter(p=>mOk(p.machine)&&inRange((p.start||'').slice(0,10)));
+  const st=DATA.prompt_stats||{};
+  const out=el('div');
+
+  const kpi=el('div','kpis');
+  const add=(l,v,s)=>{const k=el('div','kpi');
+    k.append(el('div','l',l),el('div','v',v),el('div','s',s||'')); kpi.append(k);};
+  add('요청 수', num(st.count||0), '전체 기간 기준');
+  add('요청당 평균', usd(st.mean||0), '중앙값 '+usd(st.median||0));
+  add('상위 10%', usd(st.p90||0)+' 이상', '이 구간이 비용의 '+(st.top10_share||0)+'%');
+  add('요청당 중앙값', usd(st.median||0), '절반은 이보다 쌉니다');
+  out.append(panel('요청 1건 = 내가 한 번 시킨 것',
+    '턴이 아니라 사용자 프롬프트 단위입니다. 하나의 요청에 딸린 모든 턴과 도구 호출이 함께 묶입니다. '
+    + '통계는 전체 기간 기준이고, 아래 목록은 필터가 적용됩니다.', kpi));
+
+  if(!ps.length){
+    out.append(el('div','panel','<div class="warnbox">이 조건에 해당하는 요청이 없습니다.</div>'));
+    return out;
+  }
+  const cols=[
+    {h:'비용', v:p=>p.cost, f:p=>usd(p.cost)},
+    {h:'프로젝트', l:1, v:p=>p.project, f:p=>p.project},
+    {h:'시각', l:1, v:p=>p.start, f:p=>(p.start||'').slice(0,16).replace('T',' ')},
+    {h:'턴', v:p=>p.turns, f:p=>p.turns},
+    {h:'도구', v:p=>p.tools, f:p=>p.tools},
+    {h:'출력', v:p=>p.out, f:p=>num(p.out)},
+    {h:'요청 내용', l:1, v:p=>p.text||'~',
+     f:p=>p.text ? `<span title="${p.text.replace(/"/g,'&quot;')}">${p.text.slice(0,70)}</span>`
+                 : '<span class="pill">서브에이전트</span>'},
+  ];
+  out.append(panel('비싼 요청 Top '+ps.length,
+    '요청 내용은 보낸 메시지의 첫 160자입니다. --no-prompts 로 생성하면 이 열은 비어 있습니다.',
+    table(cols, ps.slice())));
+
+  const byProj={};
+  ps.forEach(p=>{byProj[p.project]=(byProj[p.project]||0)+p.cost;});
+  out.append(panel('비싼 요청이 몰린 프로젝트', '위 목록에 든 요청들만 집계한 값입니다.',
+    barList(Object.entries(byProj).sort((a,b)=>b[1]-a[1]).slice(0,12)
+      .map(([k,v],i)=>({k,v,ci:i})), ps.reduce((a,p)=>a+p.cost,0))));
+  return out;
+}
+
+function tabAgents(){
+  const ag=(DATA.agents||[]).filter(a=>mOk(a.machine)&&inRange((a.start||'').slice(0,10)));
+  const out=el('div');
+  if(!ag.length){
+    out.append(el('div','panel','<div class="warnbox">이 조건에 해당하는 서브에이전트 기록이 없습니다.</div>'));
+    return out;
+  }
+  const tot=ag.reduce((a,x)=>a+x.cost,0);
+  const allCost=fDays().reduce((a,d)=>a+d.cost,0);
+
+  const kpi=el('div','kpis');
+  const add=(l,v,s)=>{const k=el('div','kpi');
+    k.append(el('div','l',l),el('div','v',v),el('div','s',s||'')); kpi.append(k);};
+  add('서브에이전트 비용', usd(tot), allCost?('전체의 '+(tot/allCost*100).toFixed(1)+'%'):'');
+  add('실행 수', String(ag.length), '턴 '+num(ag.reduce((a,x)=>a+x.turns,0)));
+  add('실행당 평균', usd(tot/ag.length), '턴당 '+usd(tot/Math.max(ag.reduce((a,x)=>a+x.turns,0),1)));
+  add('이름 확인됨', ag.filter(a=>a.type).length+' / '+ag.length, '나머지는 호출 기록이 없습니다');
+  out.append(panel('서브에이전트가 쓴 몫',
+    '메인 세션과 별도로 쌓이는 fork·subagent 로그를 모은 값입니다. 비용은 이것을 띄운 세션에 귀속됩니다.', kpi));
+
+  const bySess={};
+  ag.forEach(a=>{const k=a.project+' / '+(a.session||'').slice(0,8);
+    bySess[k]=(bySess[k]||0)+a.cost;});
+  out.append(panel('서브에이전트 비용이 큰 세션 Top 15', null,
+    barList(Object.entries(bySess).sort((a,b)=>b[1]-a[1]).slice(0,15)
+      .map(([k,v],i)=>({k,v,ci:i})), tot)));
+
+  const cols=[
+    {h:'비용', v:a=>a.cost, f:a=>usd(a.cost)},
+    {h:'프로젝트', l:1, v:a=>a.project, f:a=>a.project},
+    {h:'세션', l:1, v:a=>a.session, f:a=>(a.session||'').slice(0,8)},
+    {h:'종류', l:1, v:a=>a.type||'~', f:a=>a.type||'<span class="pill">미확인</span>'},
+    {h:'작업', l:1, v:a=>a.desc||'~', f:a=>a.desc||'<span class="pill">기록 없음</span>'},
+    {h:'턴', v:a=>a.turns, f:a=>a.turns},
+    {h:'캐시 읽기', v:a=>a.cr, f:a=>num(a.cr)},
+    {h:'출력', v:a=>a.out, f:a=>num(a.out)},
+  ];
+  out.append(panel('서브에이전트 실행 목록',
+    '"종류"와 "작업"은 부모 세션에 Agent 호출이 기록된 경우에만 채워집니다. '
+    + '워크플로우 등으로 생성된 실행은 호출 기록이 남지 않아 세션으로만 식별됩니다.',
+    table(cols, ag.slice())));
+  return out;
+}
+
+const TABS=[['비용 귀속',tabCost],['요청 단위',tabPrompts],['낭비 원인',tabWaste],
+            ['서브에이전트',tabAgents],['작업 패턴',tabPattern],['머신 비교',tabMachine]];
 
 function renderKpis(){
   const days=fDays(), sess=fSessions();

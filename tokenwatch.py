@@ -84,6 +84,11 @@ class Agg:
         self.declared_meta = {}
         self.seen_msgs = set()                   # message.id dedup across all files
         self.titles = {}                         # sid -> {"ai": ..., "custom": ...}
+        self.prompts = {}                        # (machine, sid, promptId) -> one request
+        self.agent_calls = {}                    # tool_use_id -> {type, desc, session}
+        self.agent_logs = defaultdict(lambda: dict(cost=0.0, turns=0, cr=0, cw=0, out=0))
+        self.agent_link = {}                     # subagent log -> spawning tool_use_id
+        self.ttl = defaultdict(lambda: dict(cost=0.0, turns=0, cw=0, cr=0, write_cost=0.0))
 
 
 def session_id_of(path: Path, root: Path) -> tuple[str, bool]:
@@ -99,10 +104,13 @@ def session_id_of(path: Path, root: Path) -> tuple[str, bool]:
     return path.stem, False
 
 
-def scan_file(path: Path, machine: str, agg: Agg, since, until, root: Path):
+def scan_file(path: Path, machine: str, agg: Agg, since, until, root: Path,
+              keep_prompts: bool = True):
     sid, is_agent = session_id_of(path, root)
     pending = {}            # tool_use_id -> tool name
     s = None
+    prompt_key = None       # the request every following turn is billed to
+    agent_key = (machine, path.stem)   # for a subagent log: its own cost bucket
     for raw in path.open(errors="ignore"):
         raw = raw.strip()
         if not raw:
@@ -138,13 +146,31 @@ def scan_file(path: Path, machine: str, agg: Agg, since, until, root: Path):
         msg = d.get("message") or {}
         content = msg.get("content")
 
-        # tool results arrive on user records
-        if rtype == "user" and isinstance(content, list):
-            for b in content:
-                if isinstance(b, dict) and b.get("type") == "tool_result":
+        if rtype == "user":
+            pid = d.get("promptId")
+            if pid:
+                prompt_key = (machine, sid, pid)
+                p = agg.prompts.get(prompt_key)
+                if p is None:
+                    p = agg.prompts[prompt_key] = dict(
+                        machine=machine, sid=sid, pid=pid, text="",
+                        project=project_name(d.get("cwd", ""), path.parent.name),
+                        start=d.get("timestamp", ""), cost=0.0, turns=0,
+                        tools=0, out=0, ctx=0, agent=is_agent)
+                # Only a real typed message has string content; tool results are lists.
+                if keep_prompts and isinstance(content, str) and not p["text"]:
+                    p["text"] = " ".join(content.split())[:160]
+            if isinstance(content, list):
+                for b in content:
+                    if not isinstance(b, dict) or b.get("type") != "tool_result":
+                        continue
+                    # The first tool_result in a subagent log answers the Agent
+                    # call in the parent that spawned it, so its id is the link
+                    # back to that call's subagent_type and description.
+                    if is_agent:
+                        agg.agent_link.setdefault(agent_key, b.get("tool_use_id"))
                     name = pending.pop(b.get("tool_use_id"), "(unknown)")
                     t = agg.tools[(machine, name)]
-                    t["calls"] += 0  # calls counted at tool_use time
                     t["chars"] += blob_len(b.get("content"))
                     if b.get("is_error"):
                         t["errors"] += 1
@@ -154,11 +180,13 @@ def scan_file(path: Path, machine: str, agg: Agg, since, until, root: Path):
             continue
 
         # One API response is written out as several assistant records, one per
-        # content block, each carrying an identical `usage`. Bill it once.
+        # content block, each carrying an identical `usage`. Bill it once — but
+        # keep reading every record, because the later ones hold content blocks
+        # (tool calls among them) that the first record does not.
         mid = msg.get("id")
+        billable = True
         if mid:
-            if mid in agg.seen_msgs:
-                continue
+            billable = mid not in agg.seen_msgs
             agg.seen_msgs.add(mid)
 
         ts = parse_ts(d.get("timestamp"))
@@ -169,11 +197,35 @@ def scan_file(path: Path, machine: str, agg: Agg, since, until, root: Path):
         if until and ts > until:
             continue
 
+        tool_calls = 0
         if isinstance(content, list):
             for b in content:
-                if isinstance(b, dict) and b.get("type") == "tool_use":
-                    pending[b.get("id")] = b.get("name") or "(unnamed)"
-                    agg.tools[(machine, b.get("name") or "(unnamed)")]["calls"] += 1
+                if not isinstance(b, dict) or b.get("type") != "tool_use":
+                    continue
+                name = b.get("name") or "(unnamed)"
+                if b.get("id") in pending:
+                    continue          # the same block written out twice
+                pending[b.get("id")] = name
+                agg.tools[(machine, name)]["calls"] += 1
+                tool_calls += 1
+                if name == "Agent":
+                    i = b.get("input") or {}
+                    agg.agent_calls[(machine, b.get("id"))] = dict(
+                        type=i.get("subagent_type") or "(default)",
+                        desc=" ".join(str(i.get("description") or "").split())[:60],
+                        session=sid)
+                    # A subagent log replays the Agent call that spawned it as
+                    # its own first tool_use, so the first one names this log.
+                    if is_agent and agent_key not in agg.agent_link:
+                        agg.agent_link[agent_key] = b.get("id")
+
+        # Tool calls are counted from every record, so attribute them before
+        # the billing records are filtered down to one per response.
+        if tool_calls and prompt_key is not None:
+            agg.prompts[prompt_key]["tools"] += tool_calls
+
+        if not billable:
+            continue
 
         u = msg.get("usage") or {}
         model = d.get("requestedModel") or msg.get("model") or DEFAULT_MODEL
@@ -200,6 +252,31 @@ def scan_file(path: Path, machine: str, agg: Agg, since, until, root: Path):
         rec["cr"] += cr
         rec["cw"] += cw5 + cw1h
         rec["turns"] += 1
+
+        if prompt_key is not None:
+            p = agg.prompts[prompt_key]
+            p["cost"] += c
+            p["turns"] += 1
+            p["out"] += out
+            p["ctx"] += inp + cr + cw5 + cw1h
+        if is_agent:
+            al = agg.agent_logs[agent_key]
+            al["session"] = sid
+            al["project"] = proj
+            al["start"] = al.get("start") or ts.isoformat()
+            al["cost"] += c
+            al["turns"] += 1
+            al["cr"] += cr
+            al["cw"] += cw5 + cw1h
+            al["out"] += out
+        # Which cache TTL the turn asked for, and what that choice cost.
+        tk = agg.ttl[(machine, d.get("promptCacheRequested") or "(none)")]
+        tk["cost"] += c
+        tk["turns"] += 1
+        tk["cw"] += cw5 + cw1h
+        tk["cr"] += cr
+        pr = price(model)
+        tk["write_cost"] += (cw5 * pr["cw5"] + cw1h * pr["cw1h"]) / 1_000_000
 
         agg.heat[(machine, ts.weekday(), ts.hour)] += c
         m = agg.models[(machine, model)]
@@ -236,7 +313,7 @@ def scan_file(path: Path, machine: str, agg: Agg, since, until, root: Path):
             s["side"] += 1
 
 
-def build(sources, since, until):
+def build(sources, since, until, keep_prompts=True):
     agg = Agg()
     files = 0
     for machine, root in sources:
@@ -245,7 +322,7 @@ def build(sources, since, until):
             print(f"[warn] source not found: {machine}={root}", file=sys.stderr)
             continue
         for f in sorted(root.rglob("*.jsonl")):
-            scan_file(f, machine, agg, since, until, root)
+            scan_file(f, machine, agg, since, until, root, keep_prompts)
             files += 1
     return agg, files
 
@@ -278,6 +355,42 @@ def to_payload(agg: Agg, sources, files):
                 for (m, p, b), v in agg.branches.items()]
     branches.sort(key=lambda x: -x["cost"])
 
+    # --- requests: one user prompt and everything it set in motion -----------
+    prompts = [p for p in agg.prompts.values() if p["turns"]]
+    prompts.sort(key=lambda p: -p["cost"])
+    costs = sorted((p["cost"] for p in prompts), reverse=True)
+    n = len(costs)
+    pstat = {
+        "count": n,
+        "total": round(sum(costs), 4),
+        "mean": round(sum(costs) / n, 5) if n else 0,
+        "median": round(costs[n // 2], 5) if n else 0,
+        "p90": round(costs[int(n * 0.1)], 5) if n else 0,
+        "top10_share": round(sum(costs[:max(n // 10, 1)]) / sum(costs) * 100, 1) if n else 0,
+    }
+
+    # --- subagents: join each fork's log to the Agent call that spawned it ----
+    agents = []
+    for (machine, stem), v in agg.agent_logs.items():
+        call = agg.agent_calls.get((machine, agg.agent_link.get((machine, stem))))
+        agents.append(dict(
+            machine=machine, log=stem.replace("agent-", "")[:12],
+            type=(call or {}).get("type", ""),
+            desc=(call or {}).get("desc", ""),
+            session=v.get("session", ""), project=v.get("project", ""),
+            start=v.get("start", ""),
+            cost=v["cost"], turns=v["turns"], cr=v["cr"], cw=v["cw"], out=v["out"]))
+    agents.sort(key=lambda a: -a["cost"])
+    # Fold each fork's cost back into the session that spawned it, so a session
+    # row shows how much of its bill was spent by its subagents.
+    per_session = defaultdict(float)
+    for a in agents:
+        per_session[(a["machine"], a["session"])] += a["cost"]
+    for s in sessions:
+        s["agent_cost"] = round(per_session.get((s["machine"], s["sid"]), 0.0), 4)
+
+    ttl = [dict(machine=m, ttl=k, **v) for (m, k), v in agg.ttl.items()]
+
     calc = sum(s["cost"] for s in sessions if s["declared"] is not None)
     decl = sum(s["declared"] for s in sessions if s["declared"] is not None)
     # Per-session ratio is the honest accuracy measure: cost-state is a snapshot
@@ -305,6 +418,8 @@ def to_payload(agg: Agg, sources, files):
         },
         "days": days, "sessions": sessions, "tools": tools,
         "heat": heat, "models": models, "efforts": efforts, "branches": branches,
+        "prompts": prompts[:250], "prompt_stats": pstat,
+        "agents": agents, "ttl": ttl,
     }
 
 
@@ -369,6 +484,47 @@ def demo_payload():
             title=rnd.choice(topics),
             titled_by=rnd.choice(["ai", "ai", "ai", "custom"])))
     sessions.sort(key=lambda s: -s["cost"])
+
+    asks = ["이 테스트 왜 깨지는지 봐줘", "리팩터링해줘", "배포 스크립트 정리",
+            "에러 로그 분석해줘", "문서 업데이트", "의존성 올려줘",
+            "성능 프로파일링 돌려줘", "리뷰 코멘트 반영", "마이그레이션 작성"]
+    prompts = []
+    for s in sessions[:40]:
+        for _ in range(rnd.randint(1, 6)):
+            t = rnd.randint(1, 40)
+            prompts.append(dict(
+                machine=s["machine"], sid=s["sid"], pid=f"{rnd.getrandbits(32):08x}",
+                project=s["project"], start=s["start"], turns=t,
+                tools=rnd.randint(0, t * 3), out=t * rnd.randint(300, 2000),
+                ctx=t * rnd.randint(30_000, 200_000),
+                cost=cost_of("claude-opus-5-5", t * 8, t * 900, 0,
+                             t * 4_000, t * 90_000),
+                text=rnd.choice(asks), agent=False))
+    prompts.sort(key=lambda p: -p["cost"])
+    pcosts = [p["cost"] for p in prompts]
+    agents = []
+    for s in sessions[:25]:
+        for _ in range(rnd.randint(0, 4)):
+            t = rnd.randint(20, 400)
+            agents.append(dict(
+                machine=s["machine"], log=f"{rnd.getrandbits(24):06x}",
+                type=rnd.choice(["fork", "general-purpose", "Explore", ""]),
+                desc=rnd.choice(asks + [""]), session=s["sid"],
+                project=s["project"], start=s["start"],
+                cost=cost_of("claude-opus-5-5", t * 8, t * 900, 0, t * 4_000, t * 90_000),
+                turns=t, cr=t * 90_000, cw=t * 4_000, out=t * 900))
+    agents.sort(key=lambda a: -a["cost"])
+    per_session = defaultdict(float)
+    for a in agents:
+        per_session[(a["machine"], a["session"])] += a["cost"]
+    for s in sessions:
+        s["agent_cost"] = round(per_session.get((s["machine"], s["sid"]), 0.0), 4)
+    ttl = [dict(machine=m, ttl=k, turns=rnd.randint(200, 3000),
+                cw=rnd.randint(2_000_000, 20_000_000),
+                cr=rnd.randint(200_000_000, 900_000_000),
+                cost=rnd.uniform(20, 300), write_cost=rnd.uniform(5, 90))
+           for m in machines for k in ("1h", "5m", "(none)")]
+
     return {
         "meta": {"generated": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
                  "sources": [{"machine": m, "path": "demo"} for m in machines],
@@ -393,6 +549,15 @@ def demo_payload():
                   turns=rnd.randint(10, 2_000))
              for m in machines for p in projects for b in branches],
             key=lambda x: -x["cost"]),
+        "prompts": prompts[:250], "agents": agents, "ttl": ttl,
+        "prompt_stats": {
+            "count": len(prompts), "total": round(sum(pcosts), 4),
+            "mean": round(sum(pcosts) / len(pcosts), 5),
+            "median": round(sorted(pcosts)[len(pcosts) // 2], 5),
+            "p90": round(sorted(pcosts, reverse=True)[len(pcosts) // 10], 5),
+            "top10_share": round(sum(sorted(pcosts, reverse=True)[:len(pcosts) // 10])
+                                 / sum(pcosts) * 100, 1),
+        },
     }
 
 
@@ -408,6 +573,8 @@ def main():
     ap.add_argument("--open", action="store_true", help="open the report in a browser")
     ap.add_argument("--demo", action="store_true",
                     help="render synthetic data instead of reading real logs")
+    ap.add_argument("--no-prompts", action="store_true",
+                    help="leave the text of your prompts out of the report")
     a = ap.parse_args()
 
     if a.demo:
@@ -434,7 +601,7 @@ def main():
     until = (dt.datetime.fromisoformat(a.until).replace(hour=23, minute=59, second=59, tzinfo=tz)
              if a.until else None)
 
-    agg, files = build(sources, since, until)
+    agg, files = build(sources, since, until, keep_prompts=not a.no_prompts)
     payload = to_payload(agg, sources, files)
 
     tpl = Path(__file__).with_name("template.html").read_text(encoding="utf-8")

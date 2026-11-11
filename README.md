@@ -42,12 +42,26 @@ a sortable table of every session with its turns, average context, API time and 
 Sessions carry the title Claude Code gave them, so several runs out of the same directory stay
 told apart; a name you typed yourself is shown in green.
 
+**Requests** — the same money grouped by what you actually asked for. One user prompt and every
+turn, tool call and token it set in motion count as one request, which is the unit you think in;
+turns are Claude's. Here the top 10% of requests account for 58% of the bill.
+
+<img src="docs/requests.png" alt="Per-request statistics and the most expensive requests, with their text" width="900">
+
 **Waste tracing** — the same daily cost split by *token kind* instead of project. Cache reads,
 cache writes, output and uncached input are priced separately, so the chart shows what your
 money is actually buying. Underneath it: how many characters each tool pushed into the
-context, and which sessions re-read the largest context on every turn.
+context, and which sessions re-read the largest context on every turn. Last, whether each cache
+TTL earned its keep: a 1-hour cache write costs 2× the input rate and a read 0.05×, so a cached
+token has to be re-read about 2.1 times before it pays for itself (1.3 for a 5-minute cache).
 
-<img src="docs/waste.png" alt="Cost split by token kind, tool output volume, and the sessions with the largest per-turn context" width="900">
+<img src="docs/waste.png" alt="Cost split by token kind, tool output volume, per-turn context, and cache TTL break-even" width="900">
+
+**Subagents** — forks and subagents write their own transcripts and spend real money, often a
+fifth of the bill. This tab separates that spend out, attributes it to the session that spawned
+it, and names each run where the parent recorded the Agent call that started it.
+
+<img src="docs/agents.png" alt="Subagent spend, the sessions that spawned the most, and a per-run table" width="900">
 
 **Work patterns** — a weekday × hour heatmap, daily turn counts, cost by model and by effort
 level, and the sessions that ran longest in wall-clock time.
@@ -95,6 +109,7 @@ python3 tokenwatch.py [-o OUT.html] [--since YYYY-MM-DD] [--until YYYY-MM-DD]
 | `-o`, `--out` | Where to write the report. Default `tokenwatch-report.html` |
 | `--json` | Also dump the aggregated numbers, if you want to chart them elsewhere |
 | `--demo` | Synthetic data, for screenshots and for a look before you commit |
+| `--no-prompts` | Leave the text of your prompts out of the report |
 | `--open` | Open the report in your browser when it is done |
 
 The report is a single file with the data inlined. It needs no server and no network — mail
@@ -158,6 +173,11 @@ side by side.
   unknown model falls back to the Opus rate and is therefore an over-estimate for cheap models.
 - **Projects are named after the working directory.** Two checkouts of the same repo in
   different directories count as two projects, and `cd` into a subdirectory starts a third.
+- **The report quotes your prompts.** The requests tab shows the first 160 characters of each
+  message you sent, so a report you pass around carries that text. `--no-prompts` leaves it out.
+- **Most subagent runs cannot be named.** A fork records the Agent call that spawned it only when
+  the parent session wrote one; runs started through a workflow leave no such record, so they are
+  identified by their session instead. Their cost is attributed correctly either way.
 - **Turns with no timestamp are skipped**, as are records the transcript truncated mid-write.
 - **The interface is in Korean.** The tool was written for a Korean-speaking team.
   Translation is welcome.
